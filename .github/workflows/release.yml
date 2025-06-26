@@ -1,0 +1,70 @@
+name: Docker Image CI
+
+on:
+  push:
+    branches: [ "main" ]
+
+jobs:
+
+  build:
+
+    runs-on: ubuntu-latest
+
+    steps:
+    - uses: actions/checkout@v4
+      with:
+        fetch-depth: 0
+    - name: git config
+      run: |
+        git config user.name "${GITHUB_ACTOR}"
+        git config user.email "${GITHUB_ACTOR}@users.noreply.github.com"
+    - name: Bump version and push tag
+      id: tag_version
+      uses: mathieudutour/github-tag-action@v6.2
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+    - name: Set version variables
+      id: set-version
+      run: echo "VERSION=${{ steps.tag_version.outputs.new_version }}" >> $GITHUB_ENV
+    - name: Display version from tag_version
+      run: echo "Generated version:${{ steps.tag_version.outputs.new_version }}"
+    - name: Display version
+      run: echo ${{ env.VERSION }}
+    - name: Setup .NET
+      uses: actions/setup-dotnet@v3
+      with:
+        dotnet-version: 8.0.x
+    - name: Restore dependencies
+      run: dotnet restore abp/
+    - name: Build
+      run: dotnet build abp/ --no-restore 
+    - name: Build Package
+      run: dotnet pack --output nupkgs --configuration Release /p:Version=${{ env.VERSION }}
+    - name: Push to Nuget
+      run: dotnet nuget push "nupkgs/*.nupkg" -s https://api.nuget.org/v3/index.json -k ${{secrets.NUGET_API_KEY}} --skip-duplicate
+    - name: Log in to GitHub Container Registry
+      uses: docker/login-action@v3
+      with:
+        registry: ghcr.io
+        username: ${{ github.actor }}
+        password: ${{ secrets.GITHUB_TOKEN }}
+    - name: Docker Build and Push
+      uses: docker/build-push-action@v4
+      with:
+        context: .
+        file: abp/AbpTemplate/Dockerfile
+        push: true
+        tags: |
+          ghcr.io/${{ github.repository }}:latest
+          ghcr.io/${{ github.repository }}:${{ steps.tag_version.outputs.new_version }}
+    - name: Create a GitHub release
+      uses: ncipollo/release-action@v1
+      with:
+        tag: ${{ steps.tag_version.outputs.new_tag }}
+        name: Release ${{ steps.tag_version.outputs.new_tag }}
+        body: ${{ steps.tag_version.outputs.changelog }}
+    - name: Send Http Post Request to Deploy API
+      uses: fjogeleit/http-request-action@v1
+      with:
+        url: ${{ secrets.WEBHOOK_URL }}
+        method: 'POST'
